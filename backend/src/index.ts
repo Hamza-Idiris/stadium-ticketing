@@ -106,5 +106,30 @@ app.post('/api/bookings/:id/mock-pay', strict, auth(), async (req, res) => {
 
 app.get('/api/me', auth(), (req, res) => { res.json({ role: (req as Ctx).role }); });
 
+// ---- Staff ----
+const Confirm = z.object({ method: z.string().min(2).max(30), ref: z.string().min(3).max(80) });
+app.post('/api/payments/:id/confirm', ADMIN, async (req, res) => {
+  const p = Confirm.safeParse(req.body); if (!p.success) return bad(res);
+  const { error } = await db(req).rpc('confirm_payment', { p_payment: req.params.id, p_method: p.data.method, p_ref: p.data.ref });
+  if (error) return sendError(res, error);
+  res.json({ ok: true });
+});
+
+const Scan = z.object({ token: z.string().min(6).max(200), gateId: z.string().uuid().nullish() });
+app.post('/api/scan', GATE, async (req, res) => {
+  const p = Scan.safeParse(req.body); if (!p.success) return bad(res);
+  const { data, error } = await db(req).rpc('check_in', { p_token: p.data.token.trim(), p_gate: p.data.gateId ?? null });
+  if (error) return sendError(res, error);
+  res.json(data);
+});
+
+const Entry = z.object({ matchSectionId: z.string().uuid(), delta: z.number().int().min(-50).max(50).refine((n) => n !== 0), reason: z.string().max(200).optional() });
+app.post('/api/open-entry', GATE, async (req, res) => {
+  const p = Entry.safeParse(req.body); if (!p.success) return bad(res);
+  const { data, error } = await db(req).rpc('open_entry_add', { p_ms: p.data.matchSectionId, p_delta: p.data.delta, p_reason: p.data.reason ?? null });
+  if (error) return sendError(res, error);
+  res.json({ occupancy: data });
+});
+
 app.use((e: Error, _q: Request, res: Response, _n: NextFunction) => { console.error(e); res.status(500).json({ error: 'SERVER_ERROR' }); });
 app.listen(Number(PORT), () => console.log(`API on :${PORT}`));
