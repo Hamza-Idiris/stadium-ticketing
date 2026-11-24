@@ -1,43 +1,120 @@
 import { FormEvent, useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { Calendar, MapPin, Minus, Plus, X } from 'lucide-react';
-import { api, money, useSession } from '../lib/api';
+import { useNavigate, Link } from 'react-router-dom';
+import { Calendar, CheckCircle2, Download, MapPin, Minus, Plus, X } from 'lucide-react';
+import { QRCodeSVG } from 'qrcode.react';
+import { api, download, money } from '../lib/api';
 import { useI18n } from '../lib/i18n';
 
 type Sec = { id: string; price: number; currency: string; mode: string; remaining: number; section: { name: string; image_url: string | null; numbered: boolean; display_order: number } };
 type Team = { name: string; logo_url: string | null };
 type Match = { id: string; title: string; tournament: string | null; kickoff: string; home: Team; away: Team; stadium: { name: string }; match_sections: Sec[] };
+type TicketItem = { id: string; seat_code: string | null; token: string; holder_name: string };
 
 const Crest = ({ t }: { t: Team }) => (t.logo_url ? <img src={t.logo_url} alt="" className="mx-auto h-14 w-14 rounded-full object-cover" /> :
   <div className="mx-auto grid h-14 w-14 place-items-center rounded-full border border-line bg-line/60 font-num text-lg font-bold text-brand">{t.name.slice(0, 2).toUpperCase()}</div>);
 
+function saveGuestBooking(id: string) {
+  try {
+    const list = JSON.parse(localStorage.getItem('guest_bookings') || '[]');
+    if (!list.includes(id)) localStorage.setItem('guest_bookings', JSON.stringify([id, ...list]));
+  } catch {}
+}
+
 function BookModal({ sec, onClose }: { sec: Sec; onClose: () => void }) {
-  const { t, err } = useI18n(); const nav = useNavigate(); const session = useSession();
+  const { t, err } = useI18n(); const nav = useNavigate();
   const [qty, setQty] = useState(1); const [name, setName] = useState(''); const [phone, setPhone] = useState('');
   const [bid, setBid] = useState<string | null>(null); const [e, setE] = useState(''); const [busy, setBusy] = useState(false);
+  const [tickets, setTickets] = useState<TicketItem[] | null>(null);
   const total = sec.price * qty;
+
   async function reserve(ev: FormEvent) {
     ev.preventDefault();
-    if (!session) return nav('/login');
     setBusy(true); setE('');
-    try { const r = await api<{ bookingId: string }>('/bookings', { method: 'POST', body: { matchSectionId: sec.id, qty, name, phone } });
-      if (total === 0) nav('/tickets'); else setBid(r.bookingId);
+    try {
+      const r = await api<{ bookingId: string }>('/bookings', { method: 'POST', body: { matchSectionId: sec.id, qty, name, phone } });
+      saveGuestBooking(r.bookingId);
+      if (total === 0) {
+        const b = await api<{ tickets: TicketItem[] }>(`/bookings/${r.bookingId}`);
+        setTickets(b.tickets ?? []);
+      } else {
+        setBid(r.bookingId);
+      }
     } catch (x) { setE(err(x)); } finally { setBusy(false); }
   }
-  async function pay() { setBusy(true); try { await api(`/bookings/${bid}/mock-pay`, { method: 'POST' }); nav('/tickets'); } catch (x) { setE(err(x)); } finally { setBusy(false); } }
+
+  async function pay() {
+    setBusy(true);
+    try {
+      const r = await api<{ ok: boolean; tickets: TicketItem[] }>(`/bookings/${bid}/mock-pay`, { method: 'POST' });
+      if (r.tickets?.length) {
+        setTickets(r.tickets);
+      } else if (bid) {
+        const b = await api<{ tickets: TicketItem[] }>(`/bookings/${bid}`);
+        setTickets(b.tickets ?? []);
+      }
+    } catch (x) { setE(err(x)); } finally { setBusy(false); }
+  }
+
   return (
     <div className="fixed inset-0 z-50 grid place-items-center overflow-auto bg-black/55 p-4" onClick={onClose}>
-      <form onSubmit={reserve} onClick={(x) => x.stopPropagation()} className="card grid w-full max-w-md gap-3 p-6">
-        <div className="flex items-center justify-between"><h2 className="text-xl font-extrabold">{sec.section.name}</h2><button type="button" onClick={onClose} aria-label="Close"><X size={18} /></button></div>
-        <div className="flex items-center justify-between"><span className="text-sm font-semibold">{t('qty')}</span>
-          <div className="flex items-center gap-3"><button type="button" className="btn-ghost !p-2" onClick={() => setQty(Math.max(1, qty - 1))}><Minus size={14} /></button><b className="w-6 text-center font-num text-lg">{qty}</b><button type="button" className="btn-ghost !p-2" onClick={() => setQty(Math.min(10, qty + 1))}><Plus size={14} /></button></div></div>
-        {sec.section.numbered && <p className="text-xs text-muted">{t('adj')}</p>}
-        <input className="input" required minLength={2} placeholder={t('name')} value={name} onChange={(x) => setName(x.target.value)} disabled={!!bid} />
-        <input className="input" required minLength={6} placeholder={t('phone')} value={phone} onChange={(x) => setPhone(x.target.value)} disabled={!!bid} />
-        <div className="flex items-center justify-between"><span>{t('total')}</span><b className="font-num text-2xl">{total === 0 ? t('free') : money(total, sec.currency)}</b></div>
-        {bid ? <button type="button" className="btn" disabled={busy} onClick={pay}>{t('pay')}</button> : <button className="btn" disabled={busy}>{t('reserve')}</button>}
-        {e && <p className="text-sm text-red-500">{e}</p>}
-      </form>
+      <div onClick={(x) => x.stopPropagation()} className="card grid w-full max-w-lg gap-4 p-6">
+        <div className="flex items-center justify-between">
+          <h2 className="text-xl font-extrabold">{tickets ? '🎉 Tickets Confirmed!' : sec.section.name}</h2>
+          <button type="button" onClick={onClose} aria-label="Close"><X size={18} /></button>
+        </div>
+
+        {tickets ? (
+          <div className="grid gap-4">
+            <div className="flex items-center gap-2 text-sm text-emerald-600 font-semibold">
+              <CheckCircle2 size={18} /> Your tickets are ready! Download the PDF or save the QR code.
+            </div>
+            <div className="grid max-h-80 gap-3 overflow-y-auto pr-1 sm:grid-cols-2">
+              {tickets.map((k) => (
+                <div key={k.id} className="grid place-items-center gap-2 rounded-xl border border-line bg-surface p-3 text-center">
+                  <div className="rounded-lg bg-white p-2 shadow-sm"><QRCodeSVG value={k.token} size={110} /></div>
+                  <b className="font-num text-sm">{k.seat_code ?? t('free')}</b>
+                  <div className="text-xs text-muted">{k.holder_name}</div>
+                  <button type="button" className="btn-ghost !px-3 !py-1 text-xs font-semibold flex items-center gap-1.5" onClick={() => download(`/tickets/${k.id}/pdf`, `ticket-${k.seat_code ?? k.id.slice(0, 8)}.pdf`)}>
+                    <Download size={13} /> PDF
+                  </button>
+                </div>
+              ))}
+            </div>
+            <div className="flex flex-wrap gap-2 pt-2">
+              <button type="button" className="btn flex-1 !py-2.5" onClick={() => { onClose(); nav('/tickets'); }}>
+                {t('tickets')}
+              </button>
+              <button type="button" className="btn-ghost flex-1 !py-2.5" onClick={onClose}>
+                Done
+              </button>
+            </div>
+          </div>
+        ) : (
+          <form onSubmit={reserve} className="grid gap-3">
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-semibold">{t('qty')}</span>
+              <div className="flex items-center gap-3">
+                <button type="button" className="btn-ghost !p-2" onClick={() => setQty(Math.max(1, qty - 1))}><Minus size={14} /></button>
+                <b className="w-6 text-center font-num text-lg">{qty}</b>
+                <button type="button" className="btn-ghost !p-2" onClick={() => setQty(Math.min(10, qty + 1))}><Plus size={14} /></button>
+              </div>
+            </div>
+            {sec.section.numbered && <p className="text-xs text-muted">{t('adj')}</p>}
+            <input className="input" required minLength={2} placeholder={t('name')} value={name} onChange={(x) => setName(x.target.value)} disabled={!!bid} />
+            <input className="input" required minLength={6} placeholder={t('phone')} value={phone} onChange={(x) => setPhone(x.target.value)} disabled={!!bid} />
+            <div className="flex items-center justify-between">
+              <span>{t('total')}</span>
+              <b className="font-num text-2xl">{total === 0 ? t('free') : money(total, sec.currency)}</b>
+            </div>
+            {bid ? (
+              <button type="button" className="btn" disabled={busy} onClick={pay}>{busy ? 'Processing...' : t('pay')}</button>
+            ) : (
+              <button className="btn" disabled={busy}>{busy ? 'Reserving...' : t('reserve')}</button>
+            )}
+            {e && <p className="text-sm text-red-500">{e}</p>}
+          </form>
+        )}
+      </div>
     </div>
   );
 }

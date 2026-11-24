@@ -41,6 +41,18 @@ const auth = (...roles: string[]) => async (req: Request, res: Response, next: N
 };
 const ADMIN = auth('super_admin', 'stadium_admin');
 const GATE = auth('gate_staff', 'stadium_admin', 'super_admin');
+const optAuth = async (req: Request, _res: Response, next: NextFunction) => {
+  const r = req as Ctx;
+  const token = req.headers.authorization?.replace('Bearer ', '');
+  if (token) {
+    const { data: u } = await admin.auth.getUser(token).catch(() => ({ data: { user: null } }));
+    if (u?.user) {
+      r.db = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, { ...opts, global: { headers: { Authorization: `Bearer ${token}` } } });
+      r.uid = u.user.id;
+    }
+  }
+  next();
+};
 
 const app = express();
 app.set('trust proxy', 1);
@@ -78,13 +90,27 @@ app.post('/api/contact', strict, async (req, res) => {
   res.status(201).json({ ok: true });
 });
 
-// ---- Customer ----
+// ---- Customer / Guest ----
 const Book = z.object({ matchSectionId: z.string().uuid(), qty: z.number().int().min(1).max(50), name: z.string().min(2).max(100), phone: z.string().min(6).max(25) });
-app.post('/api/bookings', strict, auth(), async (req, res) => {
+app.post('/api/bookings', strict, optAuth, async (req, res) => {
   const p = Book.safeParse(req.body); if (!p.success) return bad(res);
-  const { data, error } = await db(req).rpc('reserve_booking', { p_ms: p.data.matchSectionId, p_qty: p.data.qty, p_name: p.data.name, p_phone: p.data.phone });
+  const client = (req as Ctx).db ?? admin;
+  const { data, error } = await client.rpc('reserve_booking', { p_ms: p.data.matchSectionId, p_qty: p.data.qty, p_name: p.data.name, p_phone: p.data.phone });
   if (error) return sendError(res, error);
+  if ((req as Ctx).uid && data) {
+    await admin.from('bookings').update({ user_id: (req as Ctx).uid }).eq('id', data);
+  }
   res.status(201).json({ bookingId: data });
+});
+
+app.get('/api/bookings/:id', async (req, res) => {
+  const { data, error } = await admin.from('bookings')
+    .select('*, match_sections(price,currency,sections(name),matches(title,kickoff,stadiums(name),home:teams!home_team_id(name),away:teams!away_team_id(name))), payments(id,status,amount,currency), tickets(id,seat_code,token,status,holder_name)')
+    .eq('id', req.params.id)
+    .maybeSingle();
+  if (error) return sendError(res, error);
+  if (!data) return res.status(404).json({ error: 'NOT_FOUND' });
+  res.json(data);
 });
 
 app.get('/api/bookings/mine', auth(), async (req, res) => {
@@ -96,13 +122,16 @@ app.get('/api/bookings/mine', auth(), async (req, res) => {
 });
 
 // MOCK payment (dev only). Replace with a provider webhook that calls confirm_payment after verifying the transaction.
-app.post('/api/bookings/:id/mock-pay', strict, auth(), async (req, res) => {
+app.post('/api/bookings/:id/mock-pay', strict, optAuth, async (req, res) => {
   if (MOCK_PAYMENTS !== 'true') return res.status(404).json({ error: 'NOT_FOUND' });
   const { data: pay } = (await admin.from('payments').select('id, bookings!inner(user_id)').eq('booking_id', req.params.id).eq('status', 'pending').maybeSingle()) as any;
-  if (!pay || pay.bookings.user_id !== (req as Ctx).uid) return res.status(404).json({ error: 'NOT_FOUND' });
+  if (!pay) return res.status(404).json({ error: 'NOT_FOUND' });
+  const uid = (req as Ctx).uid;
+  if (pay.bookings?.user_id && uid && pay.bookings.user_id !== uid) return res.status(403).json({ error: 'FORBIDDEN' });
   const { error } = await admin.rpc('confirm_payment', { p_payment: pay.id, p_method: 'MOCK', p_ref: `MOCK-${randomUUID()}` });
   if (error) return sendError(res, error);
-  res.json({ ok: true });
+  const { data: t } = await admin.from('tickets').select('id, seat_code, token, status, holder_name').eq('booking_id', req.params.id);
+  res.json({ ok: true, tickets: t ?? [] });
 });
 
 app.get('/api/me', auth(), (req, res) => { res.json({ role: (req as Ctx).role }); });
@@ -153,9 +182,9 @@ app.delete('/api/admin/site_texts/:key/:lang', ADMIN, async (req, res) => {
   if (error) return sendError(res, error); res.json({ ok: true });
 });
 
-// ---- PDF ticket (owner or admin; RLS decides) ----
-app.get('/api/tickets/:id/pdf', auth(), async (req, res) => {
-  const { data: k } = (await db(req).from('tickets').select('id, seat_code, token, status, holder_name, match_sections(sections(name), matches(title, kickoff, stadiums(name), home:teams!home_team_id(name), away:teams!away_team_id(name)))').eq('id', req.params.id).maybeSingle()) as any;
+// ---- PDF ticket (owner, guest, or admin) ----
+app.get('/api/tickets/:id/pdf', async (req, res) => {
+  const { data: k } = (await admin.from('tickets').select('id, seat_code, token, status, holder_name, match_sections(sections(name), matches(title, kickoff, stadiums(name), home:teams!home_team_id(name), away:teams!away_team_id(name)))').eq('id', req.params.id).maybeSingle()) as any;
   if (!k) return res.status(404).json({ error: 'NOT_FOUND' });
   if (!['valid', 'used'].includes(k.status)) return res.status(409).json({ error: 'TICKET_NOT_VALID' });
   const m = k.match_sections.matches;

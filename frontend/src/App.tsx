@@ -22,10 +22,10 @@ export default function App() {
               {(['en', 'so'] as const).map((l) => <button key={l} onClick={() => setLang(l)} aria-pressed={lang === l} className={`rounded-full px-3 py-1.5 ${lang === l ? 'bg-surface shadow' : 'text-muted'}`}>{l.toUpperCase()}</button>)}
             </div>
             <button onClick={toggleDark} aria-label="Theme" className="grid h-9 w-9 place-items-center rounded-full border border-line bg-surface">{dark ? <Sun size={16} /> : <Moon size={16} />}</button>
+            <Link to="/tickets" className="btn-ghost !px-4 !py-2"><Ticket size={16} />{t('tickets')}</Link>
             {session ? (<>
               {['gate_staff', 'stadium_admin', 'super_admin'].includes(role) && <Link to="/gate" className="text-sm font-semibold">{t('gate')}</Link>}
               {['stadium_admin', 'super_admin'].includes(role) && <Link to="/admin" className="text-sm font-semibold">{t('admin')}</Link>}
-              <Link to="/tickets" className="btn-ghost !px-4 !py-2"><Ticket size={16} />{t('tickets')}</Link>
               <button className="text-sm font-semibold text-muted" onClick={() => supabase.auth.signOut()}>{t('logout')}</button>
             </>) : <Link to="/login" className="btn !px-4 !py-2">{t('login')}</Link>}
           </div>
