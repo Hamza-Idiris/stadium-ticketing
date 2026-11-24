@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { randomUUID } from 'node:crypto';
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -6,7 +7,7 @@ import rateLimit from 'express-rate-limit';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { z } from 'zod';
 
-const { SUPABASE_URL = '', SUPABASE_ANON_KEY = '', SUPABASE_SERVICE_ROLE_KEY = '', CORS_ORIGIN = 'http://localhost:5173', PORT = '4000' } = process.env;
+const { SUPABASE_URL = '', SUPABASE_ANON_KEY = '', SUPABASE_SERVICE_ROLE_KEY = '', CORS_ORIGIN = 'http://localhost:5173', PORT = '4000', MOCK_PAYMENTS = 'false' } = process.env;
 const opts = { auth: { persistSession: false } };
 const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, opts);
 const pub = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, opts);
@@ -74,6 +75,33 @@ app.post('/api/contact', strict, async (req, res) => {
   const { error } = await pub.from('contact_messages').insert(p.data);
   if (error) return sendError(res, error);
   res.status(201).json({ ok: true });
+});
+
+// ---- Customer ----
+const Book = z.object({ matchSectionId: z.string().uuid(), qty: z.number().int().min(1).max(50), name: z.string().min(2).max(100), phone: z.string().min(6).max(25) });
+app.post('/api/bookings', strict, auth(), async (req, res) => {
+  const p = Book.safeParse(req.body); if (!p.success) return bad(res);
+  const { data, error } = await db(req).rpc('reserve_booking', { p_ms: p.data.matchSectionId, p_qty: p.data.qty, p_name: p.data.name, p_phone: p.data.phone });
+  if (error) return sendError(res, error);
+  res.status(201).json({ bookingId: data });
+});
+
+app.get('/api/bookings/mine', auth(), async (req, res) => {
+  const { data, error } = await db(req).from('bookings')
+    .select('*, payments(id,status,amount,currency), tickets(id,seat_code,token,status,holder_name)')
+    .eq('user_id', (req as Ctx).uid!).order('created_at', { ascending: false });
+  if (error) return sendError(res, error);
+  res.json(data);
+});
+
+// MOCK payment (dev only). Replace with a provider webhook that calls confirm_payment after verifying the transaction.
+app.post('/api/bookings/:id/mock-pay', strict, auth(), async (req, res) => {
+  if (MOCK_PAYMENTS !== 'true') return res.status(404).json({ error: 'NOT_FOUND' });
+  const { data: pay } = (await admin.from('payments').select('id, bookings!inner(user_id)').eq('booking_id', req.params.id).eq('status', 'pending').maybeSingle()) as any;
+  if (!pay || pay.bookings.user_id !== (req as Ctx).uid) return res.status(404).json({ error: 'NOT_FOUND' });
+  const { error } = await admin.rpc('confirm_payment', { p_payment: pay.id, p_method: 'MOCK', p_ref: `MOCK-${randomUUID()}` });
+  if (error) return sendError(res, error);
+  res.json({ ok: true });
 });
 
 app.get('/api/me', auth(), (req, res) => { res.json({ role: (req as Ctx).role }); });
