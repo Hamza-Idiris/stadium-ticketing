@@ -22,12 +22,30 @@ function sendError(res: Response, e: { message?: string }) {
 }
 const bad = (res: Response) => res.status(400).json({ error: 'INVALID_INPUT' });
 
+// Authenticates the JWT and gives each request a Supabase client acting AS the user (RLS + auth.uid() apply).
+const auth = (...roles: string[]) => async (req: Request, res: Response, next: NextFunction) => {
+  const r = req as Ctx;
+  const token = req.headers.authorization?.replace('Bearer ', '');
+  if (!token) return res.status(401).json({ error: 'LOGIN_REQUIRED' });
+  const { data: u } = await admin.auth.getUser(token);
+  if (!u.user) return res.status(401).json({ error: 'LOGIN_REQUIRED' });
+  r.db = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, { ...opts, global: { headers: { Authorization: `Bearer ${token}` } } });
+  r.uid = u.user.id;
+  const { data: role } = await r.db.rpc('my_role');
+  r.role = (role as string) ?? 'customer';
+  if (roles.length && !roles.includes(r.role)) return res.status(403).json({ error: 'FORBIDDEN' });
+  next();
+};
+const ADMIN = auth('super_admin', 'stadium_admin');
+const GATE = auth('gate_staff', 'stadium_admin', 'super_admin');
+
 const app = express();
 app.set('trust proxy', 1);
 app.use(helmet(), cors({ origin: CORS_ORIGIN.split(',') }), express.json({ limit: '100kb' }), rateLimit({ windowMs: 60_000, limit: 120 }));
 const strict = rateLimit({ windowMs: 60_000, limit: 10 });
 
 app.get('/api/health', (_q, r) => { r.json({ ok: true }); });
+app.get('/api/me', auth(), (req, res) => { res.json({ role: (req as Ctx).role }); });
 
 app.use((e: Error, _q: Request, res: Response, _n: NextFunction) => { console.error(e); res.status(500).json({ error: 'SERVER_ERROR' }); });
 app.listen(Number(PORT), () => console.log(`API on :${PORT}`));
