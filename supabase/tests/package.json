@@ -1,0 +1,2 @@
+{"name":"stadium-db-tests","private":true,"type":"module","scripts":{"test":"node --test --test-concurrency=1 run.test.mjs"},
+"devDependencies":{"embedded-postgres":"^17.2.0-beta.15","pg":"^8.13.0"}}
