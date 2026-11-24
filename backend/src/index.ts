@@ -153,5 +153,20 @@ app.get('/api/tickets/:id/pdf', auth(), async (req, res) => {
   doc.end();
 });
 
+// ---- Cancel match / refunds ----
+app.post('/api/admin/matches/:id/cancel', ADMIN, async (req, res) => {
+  const { error } = await db(req).rpc('cancel_match', { p_match: req.params.id });
+  if (error) return sendError(res, error); res.json({ ok: true });
+});
+app.post('/api/payments/:id/refund', ADMIN, async (req, res) => {
+  const p = z.object({ reason: z.string().min(3).max(200) }).safeParse(req.body); if (!p.success) return bad(res);
+  const { error } = await db(req).rpc('refund_payment', { p_payment: req.params.id, p_reason: p.data.reason });
+  if (error) return sendError(res, error); res.json({ ok: true });
+});
+app.get('/api/admin/payments/paid', ADMIN, async (req, res) => {
+  const { data, error } = await db(req).from('payments').select('id, amount, currency, method, provider_ref, created_at, bookings(customer_name, customer_phone, qty, match_sections(matches(title, status)))').eq('status', 'paid').order('created_at', { ascending: false }).limit(200);
+  if (error) return sendError(res, error); res.json(data);
+});
+
 app.use((e: Error, _q: Request, res: Response, _n: NextFunction) => { console.error(e); res.status(500).json({ error: 'SERVER_ERROR' }); });
 app.listen(Number(PORT), () => console.log(`API on :${PORT}`));
