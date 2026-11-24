@@ -8,8 +8,18 @@ export default function Login() {
   const [signup, setSignup] = useState(false); const [email, setEmail] = useState(''); const [password, setPassword] = useState(''); const [msg, setMsg] = useState('');
   async function submit(e: FormEvent) {
     e.preventDefault();
-    const { error } = signup ? await supabase.auth.signUp({ email, password }) : await supabase.auth.signInWithPassword({ email, password });
-    if (error) setMsg(error.message); else nav('/');
+    setMsg('');
+    const cleanEmail = email.trim().toLowerCase();
+    const { data, error } = signup
+      ? await supabase.auth.signUp({ email: cleanEmail, password })
+      : await supabase.auth.signInWithPassword({ email: cleanEmail, password });
+    if (error) {
+      setMsg(error.message);
+    } else if (signup && !data.session) {
+      setMsg('Account created! If email confirmation is enabled in Supabase, please verify your email before logging in.');
+    } else {
+      nav('/');
+    }
   }
   return (
     <form onSubmit={submit} className="card mx-auto grid max-w-sm gap-3 p-6">
