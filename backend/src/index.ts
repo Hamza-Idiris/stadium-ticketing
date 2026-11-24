@@ -6,6 +6,8 @@ import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { z } from 'zod';
+import PDFDocument from 'pdfkit';
+import QRCode from 'qrcode';
 
 const { SUPABASE_URL = '', SUPABASE_ANON_KEY = '', SUPABASE_SERVICE_ROLE_KEY = '', CORS_ORIGIN = 'http://localhost:5173', PORT = '4000', MOCK_PAYMENTS = 'false' } = process.env;
 const opts = { auth: { persistSession: false } };
@@ -129,6 +131,26 @@ app.post('/api/open-entry', GATE, async (req, res) => {
   const { data, error } = await db(req).rpc('open_entry_add', { p_ms: p.data.matchSectionId, p_delta: p.data.delta, p_reason: p.data.reason ?? null });
   if (error) return sendError(res, error);
   res.json({ occupancy: data });
+});
+
+// ---- PDF ticket (owner or admin; RLS decides) ----
+app.get('/api/tickets/:id/pdf', auth(), async (req, res) => {
+  const { data: k } = (await db(req).from('tickets').select('id, seat_code, token, status, holder_name, match_sections(sections(name), matches(title, kickoff, stadiums(name), home:teams!home_team_id(name), away:teams!away_team_id(name)))').eq('id', req.params.id).maybeSingle()) as any;
+  if (!k) return res.status(404).json({ error: 'NOT_FOUND' });
+  if (!['valid', 'used'].includes(k.status)) return res.status(409).json({ error: 'TICKET_NOT_VALID' });
+  const m = k.match_sections.matches;
+  const png = await QRCode.toBuffer(k.token, { width: 320, margin: 1 }); // QR holds only the random token
+  res.setHeader('Content-Type', 'application/pdf'); res.setHeader('Content-Disposition', `attachment; filename="ticket-${String(k.seat_code ?? k.id).slice(0, 20)}.pdf"`);
+  const doc = new PDFDocument({ size: [400, 700], margin: 28 }); doc.pipe(res);
+  doc.rect(0, 0, 400, 80).fill('#0a8f5b'); doc.fillColor('#ffffff').font('Helvetica-Bold').fontSize(22).text('Garoonka Tickets', 28, 28);
+  doc.fillColor('#0e1a14').fontSize(20).text(`${m.home.name} vs ${m.away.name}`, 28, 104, { width: 344 });
+  doc.font('Helvetica').fontSize(11).fillColor('#5b6b62').text(m.title).text(new Date(m.kickoff).toLocaleString('en-GB', { dateStyle: 'full', timeStyle: 'short' })).text(m.stadiums?.name ?? '');
+  doc.moveDown(1).fillColor('#0e1a14').font('Helvetica-Bold').fontSize(16).text(`${k.match_sections.sections.name}${k.seat_code ? ' · ' + k.seat_code : ''}`)
+    .font('Helvetica').fontSize(11).text(k.holder_name);
+  doc.image(png, 40, 300, { width: 320 });
+  doc.font('Courier').fontSize(7).fillColor('#5b6b62').text(k.token, 28, 630, { width: 344, align: 'center' });
+  doc.font('Helvetica').text('Valid for one entry. Do not share this QR code.', 28, 650, { width: 344, align: 'center' });
+  doc.end();
 });
 
 app.use((e: Error, _q: Request, res: Response, _n: NextFunction) => { console.error(e); res.status(500).json({ error: 'SERVER_ERROR' }); });
